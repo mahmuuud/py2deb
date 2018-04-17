@@ -311,7 +311,10 @@ class PackageToConvert(object):
             debian_package_name = self.converter.transform_name(requirement.project_name, *requirement.extras)
             if requirement.specs:
                 for constraint, version in requirement.specs:
-                    version = self.converter.transform_version(self, requirement.project_name, version)
+                    try:
+                        version = self.converter.transform_version(self, requirement.project_name, version)
+                    except:
+                        version = 'dev'
                     if version == 'dev':
                         # Requirements like 'pytz > dev' (celery==3.1.16) don't
                         # seem to really mean anything to pip (based on my
