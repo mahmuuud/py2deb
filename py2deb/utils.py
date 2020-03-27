@@ -3,20 +3,23 @@
 # Authors:
 #  - Arjan Verwer
 #  - Peter Odding <peter.odding@paylogic.com>
-# Last Change: August 8, 2017
+# Last Change: December 16, 2018
 # URL: https://py2deb.readthedocs.io
 
 """The :mod:`py2deb.utils` module contains miscellaneous code."""
 
 # Standard library modules.
 import logging
+import os
+import platform
 import re
+import shlex
 import shutil
 import sys
 import tempfile
 
 # External dependencies.
-from cached_property import cached_property
+from property_manager import PropertyManager, cached_property, required_property
 from deb_pkg_tools.package import find_package_archives
 from six import BytesIO
 
@@ -26,8 +29,22 @@ logger = logging.getLogger(__name__)
 integer_pattern = re.compile('([0-9]+)')
 """Compiled regular expression to match a consecutive run of digits."""
 
+PYTHON_EXECUTABLE_PATTERN = re.compile(r'^(pypy(\d\.\d)?|python(\d(\.\d)?)?m?)$')
+"""
+A compiled regular expression to match Python interpreter executable names.
 
-class PackageRepository(object):
+The following are examples of program names that match this pattern:
+
+- pypy
+- pypy2.7
+- python
+- python2
+- python2.7
+- python3m
+"""
+
+
+class PackageRepository(PropertyManager):
 
     """
     Very simply abstraction for a directory containing ``*.deb`` archives.
@@ -40,18 +57,17 @@ class PackageRepository(object):
         """
         Initialize a :class:`PackageRepository` object.
 
-        :param directory: The pathname of the directory containing ``*.deb``
-                          archives (a string).
+        :param directory: The pathname of a directory containing ``*.deb`` archives (a string).
         """
-        self.directory = directory
+        super(PackageRepository, self).__init__(directory=directory)
 
     @cached_property
     def archives(self):
         """
-        Find archive(s) in package repository / directory.
+        A sorted list of package archives in :attr:`directory`.
 
-        :returns: A sorted list of package archives, same as the return value
-                  of :func:`deb_pkg_tools.package.find_package_archives()`.
+        The value of :attr:`archives` is computed using
+        :func:`deb_pkg_tools.package.find_package_archives()`.
 
         An example:
 
@@ -86,6 +102,10 @@ class PackageRepository(object):
         """
         return find_package_archives(self.directory)
 
+    @required_property
+    def directory(self):
+        """The pathname of a directory containing ``*.deb`` archives (a string)."""
+
     def get_package(self, package, version, architecture):
         """
         Find a package in the repository.
@@ -104,7 +124,7 @@ class PackageRepository(object):
                   or ``None``.
         """
         for archive in self.archives:
-            if (archive.name == package and archive.version == version and archive.architecture == architecture):
+            if archive.name == package and archive.version == version and archive.architecture == architecture:
                 return archive
 
 
@@ -144,91 +164,6 @@ class TemporaryDirectory(object):
         del self.temporary_directory
 
 
-def python_version():
-    """
-    Find the version of Python we're running.
-
-    This specifically returns a name matching the format of the names of the
-    Debian packages providing the various available Python versions.
-
-    :returns: A string like ``python2.6`` or ``python2.7``.
-    """
-    python_version = 'python%d.%d' % (sys.version_info[0], sys.version_info[1])
-    logger.debug("Detected Python version: %s", python_version)
-    return python_version
-
-
-def normalize_package_name(python_package_name):
-    """
-    Normalize Python package name to be used as Debian package name.
-
-    :param python_package_name: The name of a Python package
-                                as found on PyPI (a string).
-    :returns: The normalized name (a string).
-
-    >>> from py2deb import normalize_package_name
-    >>> normalize_package_name('MySQL-python')
-    'mysql-python'
-    >>> normalize_package_name('simple_json')
-    'simple-json'
-    """
-    return re.sub('[^a-z0-9]+', '-', python_package_name.lower()).strip('-')
-
-
-def normalize_package_version(python_package_version):
-    """
-    Normalize Python package version to be used as Debian package version.
-
-    :param python_package_version: The version of a Python package (a string).
-
-    Reformats Python package versions to comply with the Debian policy manual.
-    All characters except alphanumerics, dot (``.``) and plus (``+``) are
-    replaced with dashes (``-``).
-
-    The PEP 440 pre-release identifiers 'a', 'b', 'c' and 'rc' are prefixed by
-    a tilde (``~``) to replicate the intended ordering in Debian versions, also
-    the identifier 'c' is translated into 'rc'. Refer to `issue #8
-    <https://github.com/paylogic/py2deb/issues/8>`_ for details.
-    """
-    # Lowercase and remove invalid characters from the version string.
-    version = re.sub('[^a-z0-9.+]+', '-', python_package_version.lower()).strip('-')
-    # Translate the PEP 440 pre-release identifier 'c' to 'rc'.
-    version = re.sub(r'(\d)c(\d)', r'\1rc\2', version)
-    # Replicate the intended ordering of PEP 440 pre-release versions (a, b, rc).
-    version = re.sub(r'(\d)(a|b|rc)(\d)', r'\1~\2\3', version)
-    # Make sure the "Debian revision" contains a digit.
-    components = version.split('-')
-    if len(components) > 1 and not re.search('[0-9]', components[-1]):
-        components.append('1')
-        version = '-'.join(components)
-    return version
-
-
-def tokenize_version(version_number):
-    """
-    Tokenize a string containing a version number.
-
-    :param version_number: The string to tokenize.
-    :returns: A list of strings.
-    """
-    return [t for t in integer_pattern.split(version_number) if t]
-
-
-def package_names_match(a, b):
-    """
-    Check whether two Python package names are equal.
-
-    Uses :func:`normalize_package_name()` to normalize both names before
-    comparing them for equality. This makes sure differences in case and dashes
-    versus underscores are ignored.
-
-    :param a: The name of the first Python package (a string).
-    :param b: The name of the second Python package (a string).
-    :returns: ``True`` if the package names match, ``False`` if they don't.
-    """
-    return normalize_package_name(a) == normalize_package_name(b)
-
-
 def compact_repeating_words(words):
     """
     Remove adjacent repeating words.
@@ -258,6 +193,61 @@ def compact_repeating_words(words):
         last_word = word
 
 
+def convert_package_name(python_package_name, name_prefix=None, extras=()):
+    """
+    Convert a Python package name to a Debian package name.
+
+    :param python_package_name: The name of a Python package as found on PyPI (a string).
+    :param name_prefix: The name prefix to apply (a string or :data:`None`, in
+                        which case the result of :func:`default_name_prefix()`
+                        is used instead).
+    :returns: A Debian package name (a string).
+    """
+    # Apply the name prefix.
+    if not name_prefix:
+        name_prefix = default_name_prefix()
+    debian_package_name = '%s-%s' % (name_prefix, python_package_name)
+    # Normalize casing and special characters.
+    debian_package_name = normalize_package_name(debian_package_name)
+    # Compact repeating words (to avoid package names like 'python-python-debian').
+    debian_package_name = '-'.join(compact_repeating_words(debian_package_name.split('-')))
+    # If a requirement includes extras this changes the dependencies of the
+    # package. Because Debian doesn't have this concept we encode the names of
+    # the extras in the name of the package.
+    if extras:
+        words = [debian_package_name]
+        words.extend(sorted(extra.lower() for extra in extras))
+        debian_package_name = '-'.join(words)
+    return debian_package_name
+
+
+def default_name_prefix():
+    """
+    Get the default package name prefix for the Python version we're running.
+
+    :returns: One of the strings ``python``, ``python3`` or ``pypy``.
+    """
+    if platform.python_implementation() == 'PyPy':
+        return 'pypy'
+    elif sys.version_info[0] == 3:
+        return 'python3'
+    else:
+        return 'python'
+
+
+def detect_python_script(handle):
+    """
+    Detect whether a file-like object contains an executable Python script.
+
+    :param handle: A file-like object (assumed to contain an executable).
+    :returns: :data:`True` if the program name in the shebang_ of the script
+              references a known Python interpreter, :data:`False` otherwise.
+    """
+    command = extract_shebang_command(handle)
+    program = extract_shebang_program(command)
+    return PYTHON_EXECUTABLE_PATTERN.match(program) is not None
+
+
 def embed_install_prefix(handle, install_prefix):
     """
     Embed Python snippet that adds custom installation prefix to module search path.
@@ -266,12 +256,11 @@ def embed_install_prefix(handle, install_prefix):
     :param install_prefix: The pathname of the custom installation prefix (a string).
     :returns: A file-like object containing the modified Python script.
     """
-    lines = handle.readlines()
     # Make sure the first line of the file contains something that looks like a
     # Python hashbang so we don't try to embed Python code in files like shell
-    # scripts :-). Note that the regular expression pattern is very
-    # unrestrictive on purpose.
-    if lines and re.match(b'^#!.*\\bpython', lines[0]):
+    # scripts :-).
+    if detect_python_script(handle):
+        lines = handle.readlines()
         # We need to choose where to inject our line into the Python script.
         # This is trickier than it might seem at first, because of conflicting
         # concerns:
@@ -301,3 +290,134 @@ def embed_install_prefix(handle, install_prefix):
         # Reset the file pointer of handle, so its contents can be read again later.
         handle.seek(0)
     return handle
+
+
+def extract_shebang_command(handle):
+    """
+    Extract the shebang_ command line from an executable script.
+
+    :param handle: A file-like object (assumed to contain an executable).
+    :returns: The command in the shebang_ line (a string).
+
+    The seek position is expected to be at the start of the file and will be
+    reset afterwards, before this function returns. It is not an error if the
+    executable contains binary data.
+
+    .. _shebang: https://en.wikipedia.org/wiki/Shebang_(Unix)
+    """
+    try:
+        if handle.read(2) == b'#!':
+            data = handle.readline()
+            text = data.decode('UTF-8')
+            return text.strip()
+        else:
+            return ''
+    finally:
+        handle.seek(0)
+
+
+def extract_shebang_program(command):
+    """
+    Extract the program name from a shebang_ command line.
+
+    :param command: The result of :func:`extract_shebang_command()`.
+    :returns: The program name in the shebang_ command line (a string).
+    """
+    tokens = shlex.split(command)
+    if len(tokens) >= 2 and os.path.basename(tokens[0]) == 'env':
+        tokens = tokens[1:]
+    return os.path.basename(tokens[0]) if tokens else ''
+
+
+def normalize_package_name(python_package_name):
+    """
+    Normalize Python package name to be used as Debian package name.
+
+    :param python_package_name: The name of a Python package
+                                as found on PyPI (a string).
+    :returns: The normalized name (a string).
+
+    >>> from py2deb import normalize_package_name
+    >>> normalize_package_name('MySQL-python')
+    'mysql-python'
+    >>> normalize_package_name('simple_json')
+    'simple-json'
+    """
+    return re.sub('[^a-z0-9]+', '-', python_package_name.lower()).strip('-')
+
+
+def normalize_package_version(python_package_version, prerelease_workaround=True):
+    """
+    Normalize Python package version to be used as Debian package version.
+
+    :param python_package_version: The version of a Python package (a string).
+    :param prerelease_workaround: :data:`True` to enable the pre-release
+                                  handling documented below, :data:`False` to
+                                  restore the old behavior.
+
+    Reformats Python package versions to comply with the Debian policy manual.
+    All characters except alphanumerics, dot (``.``) and plus (``+``) are
+    replaced with dashes (``-``).
+
+    The PEP 440 pre-release identifiers 'a', 'b', 'c' and 'rc' are prefixed by
+    a tilde (``~``) to replicate the intended ordering in Debian versions, also
+    the identifier 'c' is translated into 'rc'. Refer to `issue #8
+    <https://github.com/paylogic/py2deb/issues/8>`_ for details.
+    """
+    # Lowercase and remove invalid characters from the version string.
+    version = re.sub('[^a-z0-9.+]+', '-', python_package_version.lower()).strip('-')
+    if prerelease_workaround:
+        # Translate the PEP 440 pre-release identifier 'c' to 'rc'.
+        version = re.sub(r'(\d)c(\d)', r'\1rc\2', version)
+        # Replicate the intended ordering of PEP 440 pre-release versions (a, b, rc).
+        version = re.sub(r'(\d)(a|b|rc)(\d)', r'\1~\2\3', version)
+    # Make sure the "Debian revision" contains a digit.
+    components = version.split('-')
+    if len(components) > 1 and not re.search('[0-9]', components[-1]):
+        components.append('1')
+        version = '-'.join(components)
+    return version
+
+
+def package_names_match(a, b):
+    """
+    Check whether two Python package names are equal.
+
+    Uses :func:`normalize_package_name()` to normalize both names before
+    comparing them for equality. This makes sure differences in case and dashes
+    versus underscores are ignored.
+
+    :param a: The name of the first Python package (a string).
+    :param b: The name of the second Python package (a string).
+    :returns: ``True`` if the package names match, ``False`` if they don't.
+    """
+    return normalize_package_name(a) == normalize_package_name(b)
+
+
+def python_version():
+    """
+    Find the version of Python we're running.
+
+    This specifically returns a name that matches both of the following:
+
+    - The name of the Debian package providing the current Python version.
+    - The name of the interpreter executable for the current Python version.
+
+    :returns: A string like ``python2.7``, ``python3.7`` or ``pypy``.
+    """
+    python_version = (
+        'pypy' if platform.python_implementation() == 'PyPy'
+        else 'python%d.%d' % sys.version_info[:2]
+    )
+    logger.debug("Detected Python version: %s", python_version)
+    return python_version
+
+
+def tokenize_version(version_number):
+    """
+    Tokenize a string containing a version number.
+
+    :param version_number: The string to tokenize.
+    :returns: A list of strings.
+    """
+    return [t for t in integer_pattern.split(version_number) if t]

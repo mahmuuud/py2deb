@@ -1,14 +1,18 @@
 sudo: required
 dist: trusty
 language: python
-env:
-  - TOXENV=py26
-  - TOXENV=py27
-  - TOXENV=py34
-  - TOXENV=py35
-  - TOXENV=py36
+matrix:
+  include:
+    - env: TOXENV=py26
+    - env: TOXENV=py27
+    - env: TOXENV=py34
+    - env: TOXENV=py35
+    - env: TOXENV=py36
+    - env: TOXENV=py37
+      dist: xenial
+    - env: TOXENV=pypy
 install:
-  - ./.travis.sh --install
+  - scripts/travis.sh
   - make install
   - pip-accel install coveralls tox
   - pip-accel install -r requirements-checks.txt
