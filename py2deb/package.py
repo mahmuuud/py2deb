@@ -337,6 +337,8 @@ class PackageToConvert(PropertyManager):
                         dependencies.add(debian_package_name)
                     elif constraint == '==':
                         dependencies.add('%s (= %s)' % (debian_package_name, version))
+                    elif constraint == '~=':
+                        dependencies.add('%s (>= %s)' % (debian_package_name, version))
                     elif constraint == '!=':
                         values = (debian_package_name, version, debian_package_name, version)
                         dependencies.add('%s (<< %s) | %s (>> %s)' % values)
