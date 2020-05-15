@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import tempfile
+import requirements
 
 # External dependencies.
 from property_manager import PropertyManager, cached_property, lazy_property, mutable_property, set_property
@@ -789,8 +790,28 @@ class PackageConverter(PropertyManager):
         # instead of only those not currently installed somewhere where pip can
         # see them (a poorly defined concept to begin with).
         arguments = ['--ignore-installed'] + list(pip_install_arguments)
+        requirements_file_name = None
+        narg = False
+        for arg in pip_install_arguments:
+            if narg:
+                requirements_file_name = arg
+            if arg == "-r": narg = True
+            else: narg = False
+        parsed = requirements.parse(open(requirements_file_name))
+        parsedd = {}
+        for req in parsed:
+            parsedd[req.name] = req.specs
+        
         for requirement in self.pip_accel.get_requirements(arguments):
             if requirement.name.lower() not in self.system_packages:
+                if requirement.version == "0.0.0" or requirement.version == "0.0" or requirement.version == None:
+                    new_version = "0.0.0"
+                    if requirement.name in parsedd:
+                        new_version = parsedd[requirement.name][0][1]
+                        requirement.version = new_version
+                        print("Changed corrupted version of {} to {}".format(requirement.name, new_version))
+                #requirement.version = "3.1.0"
+                #print("REQ {}".format(requirement.version))
                 yield PackageToConvert(self, requirement)
 
     def transform_name(self, python_package_name, *extras):
